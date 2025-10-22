@@ -1,0 +1,11 @@
+[Unit]
+Description=sgl-ghostbuster - Auto-detect and clean GPU leaks
+After=docker.service nvidia-persistenced.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/sglang-ghostbuster.sh
+User=root
+Nice=10
+StandardOutput=append:/var/log/sglang-ghostbuster/systemd_guard.log
+StandardError=append:/var/log/sglang-ghostbuster/systemd_guard.log
