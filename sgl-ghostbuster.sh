@@ -46,6 +46,11 @@ for c in $containers; do
             if echo "$line" | grep -q "$FAIL_KEYWORD"; then
                 continuous_fail_count=$((continuous_fail_count + 1))
                 echo "$continuous_fail_count" > "$temp_file"
+                # Check if we've reached the threshold
+                if [ "$continuous_fail_count" -ge "$MAX_FAIL" ]; then
+                    echo "[$(timestamp)] Container $name ($id) reached failure threshold ($MAX_FAIL), stopping check" | tee -a "$LOG_DIR/guard.log"
+                    break
+                fi
             elif echo "$line" | grep -q "$SUCCESS_KEYWORD"; then
                 # Found success record, system is healthy, stop checking this container
                 echo "[$(timestamp)] Container $name ($id) found success record, system healthy, skip check" | tee -a "$LOG_DIR/guard.log"

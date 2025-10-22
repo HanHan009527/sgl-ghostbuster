@@ -20,11 +20,12 @@ sglang-ghostbuster is an automated monitoring system that detects GPU memory lea
 
 1. **Container Monitoring**: Scans running Docker containers for log files
 2. **Failure Detection**: Analyzes recent logs for consecutive failure patterns
-3. **Health Check**: Stops monitoring containers that show recent success or healthy startup
-4. **GPU Status Recording**: Captures GPU memory state before cleanup
-5. **Process Cleanup**: Terminates GPU-related user-space processes
-6. **Memory Verification**: Checks VRAM usage after cleanup
-7. **Recovery Action**: Reboots system if memory leak persists
+3. **Threshold Check**: Stops counting when reaching 5 consecutive failures
+4. **Health Check**: Stops monitoring containers that show recent success or healthy startup
+5. **GPU Status Recording**: Captures GPU memory state before cleanup
+6. **Process Cleanup**: Terminates GPU-related user-space processes
+7. **Memory Verification**: Checks VRAM usage after cleanup
+8. **Recovery Action**: Reboots system if memory leak persists
 
 ## Configuration
 
