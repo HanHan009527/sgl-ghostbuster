@@ -6,7 +6,7 @@
 #  Author: hank 2025-10-22
 # ============================================================
 
-LOG_DIR="/var/log/sg-ghostbuster"
+LOG_DIR="/var/log/sgl-ghostbuster"
 mkdir -p "$LOG_DIR"
 REBOOT_COUNT_FILE="$LOG_DIR/reboot_count_$(date +%F).txt"
 FAIL_KEYWORD="completed with result: Failed"            # Failure keyword in CI logs
