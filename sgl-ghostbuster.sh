@@ -11,6 +11,7 @@ mkdir -p "$LOG_DIR"
 REBOOT_COUNT_FILE="$LOG_DIR/reboot_count_$(date +%F).txt"
 FAIL_KEYWORD="completed with result: Failed"            # Failure keyword in CI logs
 SUCCESS_KEYWORD="completed with result: Succeeded"      # Success keyword in CI logs
+HEALTHY_KEYWORD="Listening for Jobs"                    # Healthy keyword indicating CI startup
 MAX_FAIL=5                                 # Consecutive failure threshold
 GPU_LEAK_THRESHOLD=51200                   # Total VRAM usage MiB threshold for reboot (50GB = 51200MiB)
 LOG_LINES=200                              # Number of log lines to check
@@ -48,6 +49,11 @@ for c in $containers; do
             elif echo "$line" | grep -q "$SUCCESS_KEYWORD"; then
                 # Found success record, system is healthy, stop checking this container
                 echo "[$(timestamp)] Container $name ($id) found success record, system healthy, skip check" | tee -a "$LOG_DIR/guard.log"
+                echo "0" > "$temp_file"
+                break
+            elif echo "$line" | grep -q "$HEALTHY_KEYWORD"; then
+                # Found healthy startup record, system is healthy, stop checking this container
+                echo "[$(timestamp)] Container $name ($id) found healthy startup record, system healthy, skip check" | tee -a "$LOG_DIR/guard.log"
                 echo "0" > "$temp_file"
                 break
             fi
