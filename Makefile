@@ -17,6 +17,7 @@ all: install enable status
 install:
 	@echo ">>> Installing $(SERVICE_NAME) ..."
 	mkdir -p $(LOG_DIR)
+	cp $(SERVICE_NAME).sh $(BIN_PATH)
 	chmod 755 $(BIN_PATH)
 	cp $(SERVICE_NAME).service $(SERVICE_FILE)
 	cp $(SERVICE_NAME).timer $(TIMER_FILE)
