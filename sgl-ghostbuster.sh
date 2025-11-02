@@ -9,7 +9,7 @@
 LOG_DIR="/var/log/sg-ghostbuster"
 mkdir -p "$LOG_DIR"
 REBOOT_COUNT_FILE="$LOG_DIR/reboot_count_$(date +%F).txt"
-FAIL_KEYWORD="completed with result: Failed"            # Failure keyword in CI logs
+FAIL_KEYWORD="completed with result: (Failed|Canceled)"  # Failure keyword in CI logs (Failed or Canceled)
 SUCCESS_KEYWORD="completed with result: Succeeded"      # Success keyword in CI logs
 MAX_FAIL=5                                 # Consecutive failure threshold
 GPU_LEAK_THRESHOLD=51200                   # Total VRAM usage MiB threshold for reboot (50GB = 51200MiB)
@@ -42,7 +42,7 @@ for c in $containers; do
         
         # Get recent log lines, process from latest
         tail -n "$LOG_LINES" "$log_file" | tac | while IFS= read -r line; do
-            if echo "$line" | grep -q "$FAIL_KEYWORD"; then
+            if echo "$line" | grep -qE "$FAIL_KEYWORD"; then
                 continuous_fail_count=$((continuous_fail_count + 1))
                 echo "$continuous_fail_count" > "$temp_file"
             elif echo "$line" | grep -q "$SUCCESS_KEYWORD"; then
