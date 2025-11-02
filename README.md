@@ -20,11 +20,12 @@ sglang-ghostbuster is an automated monitoring system that detects GPU memory lea
 
 1. **Container Monitoring**: Scans running Docker containers for log files
 2. **Failure Detection**: Analyzes recent logs for consecutive failure patterns
-3. **Health Check**: Stops monitoring containers that show recent success
-4. **GPU Status Recording**: Captures GPU memory state before cleanup
-5. **Process Cleanup**: Terminates GPU-related user-space processes
-6. **Memory Verification**: Checks VRAM usage after cleanup
-7. **Recovery Action**: Reboots system if memory leak persists
+3. **Threshold Check**: Stops counting when reaching 5 consecutive failures
+4. **Health Check**: Stops monitoring containers that show recent success or healthy startup
+5. **GPU Status Recording**: Captures GPU memory state before cleanup
+6. **Process Cleanup**: Terminates GPU-related user-space processes
+7. **Memory Verification**: Checks VRAM usage after cleanup
+8. **Recovery Action**: Reboots system if memory leak persists
 
 ## Configuration
 
@@ -32,6 +33,7 @@ sglang-ghostbuster is an automated monitoring system that detects GPU memory lea
 
 - `FAIL_KEYWORD`: "completed with result: Failed" - Failure keyword in CI logs
 - `SUCCESS_KEYWORD`: "completed with result: Succeeded" - Success keyword in CI logs
+- `HEALTHY_KEYWORD`: "Listening for Jobs" - Healthy keyword indicating CI startup
 - `MAX_FAIL`: 5 - Consecutive failure threshold
 - `GPU_LEAK_THRESHOLD`: 51200 - VRAM usage threshold in MiB (50GB)
 - `LOG_LINES`: 200 - Number of log lines to analyze
@@ -137,6 +139,7 @@ The system provides comprehensive logging:
 ### Key Log Messages
 
 - `Container X found success record, system healthy, skip check`
+- `Container X found healthy startup record, system healthy, skip check`
 - `Container X consecutive failures: N`
 - `Current total VRAM usage: XMiB`
 - `VRAM still occupied XMiB, preparing to reboot host`
