@@ -12,7 +12,7 @@ REBOOT_COUNT_FILE="$LOG_DIR/reboot_count_$(date +%F).txt"
 FAIL_KEYWORD="completed with result: (Failed|Canceled)"  # Failure keyword in CI logs (Failed or Canceled)
 SUCCESS_KEYWORD="completed with result: Succeeded"      # Success keyword in CI logs
 HEALTHY_KEYWORD="Listening for Jobs"                    # Healthy keyword indicating CI startup
-MAX_FAIL=5                                 # Consecutive failure threshold
+MAX_FAIL=3                                 # Consecutive failure threshold
 GPU_LEAK_THRESHOLD=51200                   # Total VRAM usage MiB threshold for reboot (50GB = 51200MiB)
 LOG_LINES=200                              # Number of log lines to check
 
