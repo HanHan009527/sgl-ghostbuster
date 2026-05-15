@@ -6,170 +6,177 @@
 #  Author: hank 2025-10-22
 # ============================================================
 
-LOG_DIR="/var/log/sgl-ghostbuster"
+LOG_DIR="${LOG_DIR:-/var/log/sgl-ghostbuster}"
 mkdir -p "$LOG_DIR"
 REBOOT_COUNT_FILE="$LOG_DIR/reboot_count_$(date +%F).txt"
-FAIL_KEYWORD="completed with result: (Failed|Canceled)"  # Failure keyword in CI logs (Failed or Canceled)
-SUCCESS_KEYWORD="completed with result: Succeeded"      # Success keyword in CI logs
-HEALTHY_KEYWORD="Listening for Jobs"                    # Healthy keyword indicating CI startup
-MAX_FAIL=3                                 # Consecutive failure threshold
+LOCK_FILE="$LOG_DIR/guard.lock"
 GPU_LEAK_THRESHOLD=51200                   # Total VRAM usage MiB threshold for reboot (50GB = 51200MiB)
 LOG_LINES=200                              # Number of log lines to check
+MAX_DAILY_REBOOTS="${MAX_DAILY_REBOOTS:-6}"
+
+RDMA_HEALTHCHECK_ENABLED="${RDMA_HEALTHCHECK_ENABLED:-1}"
+RDMA_HEALTHCHECK_SCRIPT="${RDMA_HEALTHCHECK_SCRIPT:-/usr/local/bin/sgl-rdma-healthcheck.sh}"
+GHOSTBUSTER_DRY_RUN="${GHOSTBUSTER_DRY_RUN:-0}"
 
 timestamp() { date +"%F %T"; }
 
-echo "[$(timestamp)] === sglang-ghostbuster check started ===" | tee -a "$LOG_DIR/guard.log"
+log() {
+    echo "[$(timestamp)] $*" | tee -a "$LOG_DIR/guard.log"
+}
 
-# ------------------------------------------------------------
-# Step 1. Find containers with consecutive failures in CI logs
-# ------------------------------------------------------------
-containers=$(docker ps --format '{{.ID}} {{.Names}}' 2>&1)
-if [ $? -ne 0 ]; then
-    echo "[$(timestamp)] Error: Failed to get container list: $containers" | tee -a "$LOG_DIR/guard.log"
-    exit 1
-fi
+ci_runner_state() {
+    found_idle_signal=0
+    found_container=0
+    if ! command -v docker >/dev/null 2>&1; then
+        log "Cannot determine CI runner state: docker command not found"
+        echo "unknown"
+        return
+    fi
 
-leak_flag=0
-for c in $containers; do
-    id=$(echo "$c" | awk '{print $1}')
-    name=$(echo "$c" | awk '{print $2}')
-    log_file=$(docker inspect --format='{{.LogPath}}' "$id" 2>/dev/null)
+    containers_output=$(docker ps --format '{{.ID}} {{.Names}}' 2>/dev/null)
+    if [ $? -ne 0 ]; then
+        log "Cannot determine CI runner state: docker ps failed"
+        echo "unknown"
+        return
+    fi
 
-    if [ -f "$log_file" ]; then
-        # Scan from latest logs forward, calculate consecutive failure count
-        # Use a temporary file to store the count to avoid subshell issues
-        temp_file=$(mktemp)
-        continuous_fail_count=0
-        
-        # Get recent log lines, process from latest
-        tail -n "$LOG_LINES" "$log_file" | tac | while IFS= read -r line; do
-            if echo "$line" | grep -qE "$FAIL_KEYWORD"; then
-                continuous_fail_count=$((continuous_fail_count + 1))
-                echo "$continuous_fail_count" > "$temp_file"
-                # Check if we've reached the threshold
-                if [ "$continuous_fail_count" -ge "$MAX_FAIL" ]; then
-                    echo "[$(timestamp)] Container $name ($id) reached failure threshold ($MAX_FAIL), stopping check" | tee -a "$LOG_DIR/guard.log"
-                    break
-                fi
-            elif echo "$line" | grep -q "$SUCCESS_KEYWORD"; then
-                # Found success record, system is healthy, stop checking this container
-                echo "[$(timestamp)] Container $name ($id) found success record, system healthy, skip check" | tee -a "$LOG_DIR/guard.log"
-                echo "0" > "$temp_file"
-                break
-            elif echo "$line" | grep -q "$HEALTHY_KEYWORD"; then
-                # Found healthy startup record, system is healthy, stop checking this container
-                echo "[$(timestamp)] Container $name ($id) found healthy startup record, system healthy, skip check" | tee -a "$LOG_DIR/guard.log"
-                echo "0" > "$temp_file"
-                break
-            fi
-        done
-        
-        # Read the count from temp file
-        if [ -f "$temp_file" ]; then
-            continuous_fail_count=$(cat "$temp_file")
-            rm -f "$temp_file"
+    while read -r id name; do
+        [ -n "$id" ] || continue
+        found_container=1
+        log_file=$(docker inspect --format='{{.LogPath}}' "$id" 2>/dev/null)
+        [ -f "$log_file" ] || continue
+        last_state=$(tail -n "$LOG_LINES" "$log_file" | grep -aE "Running job:|Job .* completed with result:|Listening for Jobs" | tail -n 1)
+        if echo "$last_state" | grep -q "Running job:"; then
+            log "Active CI job detected in container $name ($id): $last_state"
+            echo "active"
+            return
         fi
-        
-        # Check if consecutive failure count reaches threshold
-        if [ "$continuous_fail_count" -ge "$MAX_FAIL" ]; then
-            echo "[$(timestamp)] Container $name ($id) consecutive failures: $continuous_fail_count" | tee -a "$LOG_DIR/guard.log"
-            leak_flag=1
+        if echo "$last_state" | grep -qE "Job .* completed with result:|Listening for Jobs"; then
+            log "Idle CI runner state detected in container $name ($id): $last_state"
+            found_idle_signal=1
         fi
+    done <<< "$containers_output"
+
+    if [ "$found_idle_signal" = "1" ]; then
+        echo "idle"
+    elif [ "$found_container" = "1" ]; then
+        echo "unknown"
+    else
+        log "No running Docker containers found; treating CI runner state as idle."
+        echo "idle"
     fi
-done
+}
 
-if [ "$leak_flag" -eq 0 ]; then
-    echo "[$(timestamp)] No containers with consecutive $MAX_FAIL failures detected, exiting." | tee -a "$LOG_DIR/guard.log"
-    exit 0
-fi
-
-# ------------------------------------------------------------
-# Step 2. Record GPU status
-# ------------------------------------------------------------
-echo "[$(timestamp)] Recording GPU status before cleanup..." | tee -a "$LOG_DIR/guard.log"
-if ! nvidia-smi --query-gpu=index,name,memory.used,memory.total --format=csv > "$LOG_DIR/nvidia_before.txt" 2>&1; then
-    echo "[$(timestamp)] Warning: nvidia-smi command failed, continuing with cleanup..." | tee -a "$LOG_DIR/guard.log"
-fi
-
-# Record VRAM status before cleanup to log
-echo "[$(timestamp)] === GPU VRAM status before cleanup ===" | tee -a "$LOG_DIR/guard.log"
-if [ -f "$LOG_DIR/nvidia_before.txt" ]; then
-    echo "[$(timestamp)] GPU status CSV data before cleanup:" | tee -a "$LOG_DIR/guard.log"
-    cat "$LOG_DIR/nvidia_before.txt" | while IFS= read -r line; do
-        echo "[$(timestamp)] $line" | tee -a "$LOG_DIR/guard.log"
-    done
-else
-    echo "[$(timestamp)] Warning: nvidia_before.txt file does not exist" | tee -a "$LOG_DIR/guard.log"
-fi
-
-# ------------------------------------------------------------
-# Step 3. Clean up user-space GPU processes
-# ------------------------------------------------------------
-echo "[$(timestamp)] Starting GPU user process cleanup..." | tee -a "$LOG_DIR/guard.log"
-pids=$(lsof /dev/nvidia* 2>/dev/null | awk 'NR>1 {print $2}' | sort -u)
-if [ -n "$pids" ]; then
-    echo "[$(timestamp)] Found GPU related processes: $pids" | tee -a "$LOG_DIR/guard.log"
-    echo "$pids" | xargs -r kill -9
-    echo "[$(timestamp)] Process cleanup completed, checking VRAM status immediately..." | tee -a "$LOG_DIR/guard.log"
-    # Check VRAM immediately to avoid new processes quickly occupying
-    if ! nvidia-smi --query-gpu=index,name,memory.used,memory.total --format=csv > "$LOG_DIR/nvidia_after.txt" 2>&1; then
-        echo "[$(timestamp)] Warning: nvidia-smi command failed after process cleanup" | tee -a "$LOG_DIR/guard.log"
-    fi
-else
-    echo "[$(timestamp)] No GPU user-space processes found." | tee -a "$LOG_DIR/guard.log"
-    # Even without processes, check VRAM status immediately
-    echo "[$(timestamp)] Checking current GPU status..." | tee -a "$LOG_DIR/guard.log"
-    if ! nvidia-smi --query-gpu=index,name,memory.used,memory.total --format=csv > "$LOG_DIR/nvidia_after.txt" 2>&1; then
-        echo "[$(timestamp)] Warning: nvidia-smi command failed" | tee -a "$LOG_DIR/guard.log"
-    fi
-fi
-
-# ------------------------------------------------------------
-# Step 4. Check if still leaking
-# ------------------------------------------------------------
-# Parse VRAM usage from CSV format (skip header row, sum memory.used for all GPUs)
-if [ -f "$LOG_DIR/nvidia_after.txt" ]; then
-    used=$(tail -n +2 "$LOG_DIR/nvidia_after.txt" | awk -F',' '{gsub(/[^0-9]/, "", $3); sum += $3} END {print sum+0}')
-    if [ -z "$used" ] || [ "$used" = "0" ]; then
-        echo "[$(timestamp)] Warning: Could not parse VRAM usage, defaulting to 0" | tee -a "$LOG_DIR/guard.log"
-        used=0
-    fi
-else
-    echo "[$(timestamp)] Error: nvidia_after.txt not found, cannot check VRAM usage" | tee -a "$LOG_DIR/guard.log"
-    used=0
-fi
-
-# Record detailed VRAM status to log
-echo "[$(timestamp)] === GPU VRAM status details ===" | tee -a "$LOG_DIR/guard.log"
-if [ -f "$LOG_DIR/nvidia_after.txt" ]; then
-    echo "[$(timestamp)] GPU status CSV data:" | tee -a "$LOG_DIR/guard.log"
-    cat "$LOG_DIR/nvidia_after.txt" | while IFS= read -r line; do
-        echo "[$(timestamp)] $line" | tee -a "$LOG_DIR/guard.log"
-    done
-else
-    echo "[$(timestamp)] Warning: nvidia_after.txt file does not exist" | tee -a "$LOG_DIR/guard.log"
-fi
-
-echo "[$(timestamp)] Current total VRAM usage: ${used}MiB" | tee -a "$LOG_DIR/guard.log"
-echo "[$(timestamp)] VRAM leak threshold: ${GPU_LEAK_THRESHOLD}MiB" | tee -a "$LOG_DIR/guard.log"
-
-if [ "$used" -gt "$GPU_LEAK_THRESHOLD" ]; then
-    echo "[$(timestamp)] VRAM still occupied ${used}MiB, preparing to reboot host." | tee -a "$LOG_DIR/guard.log"
+reboot_host() {
+    reason="$1"
 
     count=$(cat "$REBOOT_COUNT_FILE" 2>/dev/null || echo 0)
     count=$((count+1))
-    echo "[$(timestamp)] Updating reboot count: $count" | tee -a "$LOG_DIR/guard.log"
+    log "Reboot requested: $reason"
+    log "Updating reboot count: $count"
     echo "$count" > "$REBOOT_COUNT_FILE"
-    echo "[$(timestamp)] Today reboot count: $count" | tee -a "$LOG_DIR/guard.log"
+    log "Today reboot count: $count"
 
-    echo "[$(timestamp)] Syncing filesystem..." | tee -a "$LOG_DIR/guard.log"
+    if [ "$count" -gt "$MAX_DAILY_REBOOTS" ]; then
+        log "Daily reboot limit $MAX_DAILY_REBOOTS exceeded, not rebooting."
+        return 1
+    fi
+
+    if [ "$GHOSTBUSTER_DRY_RUN" = "1" ]; then
+        log "GHOSTBUSTER_DRY_RUN=1, reboot command skipped."
+        return 0
+    fi
+
+    log "Syncing filesystem..."
     sync
-    echo "[$(timestamp)] Waiting 2 seconds before system reboot..." | tee -a "$LOG_DIR/guard.log"
+    log "Waiting 2 seconds before system reboot..."
     sleep 2
-    echo "[$(timestamp)] Executing system reboot command..." | tee -a "$LOG_DIR/guard.log"
+    log "Executing system reboot command..."
     /usr/bin/systemctl reboot
-else
-    echo "[$(timestamp)] VRAM cleanup successful, no reboot needed." | tee -a "$LOG_DIR/guard.log"
+}
+
+run_rdma_healthcheck() {
+    if [ "$RDMA_HEALTHCHECK_ENABLED" != "1" ]; then
+        log "RDMA healthcheck disabled."
+        return 0
+    fi
+
+    if [ ! -x "$RDMA_HEALTHCHECK_SCRIPT" ]; then
+        log "RDMA healthcheck failed: script $RDMA_HEALTHCHECK_SCRIPT is missing or not executable"
+        return 1
+    fi
+
+    "$RDMA_HEALTHCHECK_SCRIPT"
+}
+
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+    log "Another sglang-ghostbuster check is already running, exiting."
+    exit 0
 fi
 
-echo "[$(timestamp)] === sglang-ghostbuster check completed ===" | tee -a "$LOG_DIR/guard.log"
+log "=== sglang-ghostbuster check started ==="
+
+if ! run_rdma_healthcheck; then
+    log "RDMA healthcheck failed."
+    log "RDMA healthcheck failure is treated as fatal for active CI; reboot will not be deferred for active jobs."
+    reboot_host "RDMA healthcheck failed"
+    exit 1
+fi
+
+log "RDMA healthcheck passed."
+
+# CI jobs normally occupy GPU memory. Only classify high VRAM as a leak when
+# the runner is idle.
+ci_state=$(ci_runner_state | tail -n 1)
+case "$ci_state" in
+    active)
+        log "Active CI job detected; GPU memory use is expected, skipping GPU leak check."
+        exit 0
+        ;;
+    idle)
+        ;;
+    *)
+        log "CI runner state is unknown; skipping GPU leak check to avoid rebooting an active job."
+        exit 0
+        ;;
+esac
+
+# ------------------------------------------------------------
+# Step 1. Check idle GPU memory usage
+# ------------------------------------------------------------
+log "No active CI job detected; checking GPU memory usage for leaks."
+
+if ! nvidia-smi --query-gpu=index,name,memory.used,memory.total --format=csv > "$LOG_DIR/nvidia_current.txt" 2>&1; then
+    log "Error: nvidia-smi command failed, cannot check GPU memory leak."
+    cat "$LOG_DIR/nvidia_current.txt" | while IFS= read -r line; do
+        log "$line"
+    done
+    exit 1
+fi
+
+# Parse VRAM usage from CSV format (skip header row, sum memory.used for all GPUs)
+used=$(tail -n +2 "$LOG_DIR/nvidia_current.txt" | awk -F',' '{gsub(/[^0-9]/, "", $3); sum += $3} END {print sum+0}')
+if [ -z "$used" ]; then
+    log "Error: Could not parse VRAM usage."
+    exit 1
+fi
+
+# Record detailed VRAM status to log
+log "=== GPU VRAM status details ==="
+log "GPU status CSV data:"
+cat "$LOG_DIR/nvidia_current.txt" | while IFS= read -r line; do
+    log "$line"
+done
+
+log "Current total VRAM usage: ${used}MiB"
+log "VRAM leak threshold: ${GPU_LEAK_THRESHOLD}MiB"
+
+if [ "$used" -gt "$GPU_LEAK_THRESHOLD" ]; then
+    log "GPU memory leak detected while no CI job is active; rebooting host."
+    reboot_host "Idle GPU memory usage ${used}MiB exceeds threshold ${GPU_LEAK_THRESHOLD}MiB"
+else
+    log "No idle GPU memory leak detected."
+fi
+
+log "=== sglang-ghostbuster check completed ==="

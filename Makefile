@@ -4,6 +4,9 @@
 
 SERVICE_NAME=sgl-ghostbuster
 BIN_PATH=/usr/local/bin/$(SERVICE_NAME).sh
+RDMA_HEALTHCHECK_NAME=sgl-rdma-healthcheck
+RDMA_HEALTHCHECK_BIN=/usr/local/bin/$(RDMA_HEALTHCHECK_NAME).sh
+SUPPORT_DIR=/usr/local/lib/$(SERVICE_NAME)
 SERVICE_FILE=/etc/systemd/system/$(SERVICE_NAME).service
 TIMER_FILE=/etc/systemd/system/$(SERVICE_NAME).timer
 LOG_DIR=/var/log/$(SERVICE_NAME)
@@ -19,6 +22,15 @@ install:
 	mkdir -p $(LOG_DIR)
 	cp $(SERVICE_NAME).sh $(BIN_PATH)
 	chmod 755 $(BIN_PATH)
+	cp $(RDMA_HEALTHCHECK_NAME).sh $(RDMA_HEALTHCHECK_BIN)
+	chmod 755 $(RDMA_HEALTHCHECK_BIN)
+	mkdir -p $(SUPPORT_DIR)
+	cp sgl-rdma-container-check.sh $(SUPPORT_DIR)/
+	cp sgl-rdma-mooncake-import-check.py $(SUPPORT_DIR)/
+	cp sgl-rdma-mooncake-init-check.py $(SUPPORT_DIR)/
+	cp sgl-rdma-mooncake-tensor-transfer-check.py $(SUPPORT_DIR)/
+	chmod 755 $(SUPPORT_DIR)/sgl-rdma-container-check.sh
+	chmod 644 $(SUPPORT_DIR)/sgl-rdma-mooncake-import-check.py $(SUPPORT_DIR)/sgl-rdma-mooncake-init-check.py $(SUPPORT_DIR)/sgl-rdma-mooncake-tensor-transfer-check.py
 	cp $(SERVICE_NAME).service $(SERVICE_FILE)
 	cp $(SERVICE_NAME).timer $(TIMER_FILE)
 	systemctl daemon-reload
@@ -46,7 +58,8 @@ disable:
 
 uninstall: disable
 	@echo ">>> Uninstalling $(SERVICE_NAME) ..."
-	rm -f $(SERVICE_FILE) $(TIMER_FILE) $(BIN_PATH)
+	rm -f $(SERVICE_FILE) $(TIMER_FILE) $(BIN_PATH) $(RDMA_HEALTHCHECK_BIN)
+	rm -rf $(SUPPORT_DIR)
 	rm -rf $(LOG_DIR)
 	systemctl daemon-reload
 	@echo ">>> Uninstalled ✅"
